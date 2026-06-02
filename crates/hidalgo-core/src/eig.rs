@@ -1,8 +1,6 @@
 //! Second eigenvector of a reflections matrix, found matrix-free by shifted,
 //! deflated power iteration on the symmetric similar operator.
 
-#[allow(unused_imports)]
-use crate::matrix::Matrix;
 
 /// Raw second eigenvector of the reflections matrix (before standardization).
 pub struct SecondEig {
@@ -74,7 +72,7 @@ where
         iters += 1;
         let sv = apply_s(&v);
         for i in 0..n {
-            v[i] = sv[i] + v[i]; // (S + I) shift
+            v[i] += sv[i]; // (S + I) shift
         }
         let c1 = dot(&w1, &v);
         for i in 0..n {
@@ -102,6 +100,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::matrix::Matrix;
     use crate::testutil::jacobi_symmetric;
     use approx::assert_abs_diff_eq;
 
