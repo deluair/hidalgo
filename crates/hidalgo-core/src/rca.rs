@@ -14,15 +14,17 @@ pub fn rca(exports: &Matrix) -> Matrix {
     let mut product_tot = vec![0.0; p];
     for i in 0..c {
         let row = exports.row(i);
-        for j in 0..p {
-            product_tot[j] += row[j];
+        for (acc, &val) in product_tot.iter_mut().zip(row) {
+            *acc += val;
         }
     }
+    #[allow(clippy::needless_range_loop)] // i used as positional arg to out.set(i, ..) and exports.get(i, ..)
     for i in 0..c {
         let ct = country_tot[i];
         if ct <= 0.0 {
             continue;
         }
+        #[allow(clippy::needless_range_loop)] // j used as positional arg to out.set(i, j, ...)
         for j in 0..p {
             let den = product_tot[j] / total;
             if den <= 0.0 {

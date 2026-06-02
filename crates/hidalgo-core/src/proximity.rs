@@ -42,6 +42,7 @@ pub fn density(m: &Matrix, phi: &Matrix) -> Matrix {
         .flat_map_iter(|ci| {
             let crow = m.row(ci);
             let mut out = vec![0.0f64; p];
+            #[allow(clippy::needless_range_loop)] // pp used as arg to phi.row(pp); continue branch makes zip awkward
             for pp in 0..p {
                 let mcpp = crow[pp];
                 if mcpp == 0.0 {

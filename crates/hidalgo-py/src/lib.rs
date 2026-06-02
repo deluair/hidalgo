@@ -1,3 +1,6 @@
+// pyo3's PyResult<T> triggers useless_conversion on the implicit PyErr coercion; suppress here.
+#![allow(clippy::useless_conversion)]
+
 use hidalgo_core::matrix::Matrix;
 use hidalgo_core::rca::rca as core_rca; // `rca` is a module; import the fn explicitly
 use hidalgo_core::{bundle_from_exports, bundle_from_m, bundle_from_rca, Bundle};

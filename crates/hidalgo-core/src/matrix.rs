@@ -54,6 +54,8 @@ impl Matrix {
             .into_par_iter()
             .map(|j| {
                 let mut s = 0.0;
+                // explicit index order kept for cross-thread determinism
+                #[allow(clippy::needless_range_loop)]
                 for i in 0..rows {
                     s += self.data[i * cols + j] * x[i];
                 }
