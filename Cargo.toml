@@ -1,8 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/hidalgo-core"]
-# added in Task 7
-# members = ["crates/hidalgo-core", "crates/hidalgo-py"]
+members = ["crates/hidalgo-core", "crates/hidalgo-py"]
 
 [workspace.package]
 edition = "2021"

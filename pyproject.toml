@@ -1,0 +1,16 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "hidalgo"
+version = "0.1.0"
+description = "Fast Rust economic-complexity kernels (ECI, PCI, proximity, density)"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.24"]
+
+[tool.maturin]
+manifest-path = "crates/hidalgo-py/Cargo.toml"
+module-name = "hidalgo._hidalgo"
+python-source = "python"
+features = ["pyo3/extension-module"]
