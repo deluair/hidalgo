@@ -167,4 +167,120 @@ mod tests {
 
         assert_abs_diff_eq!(aligned_cos(&got.raw, &oracle_raw), 1.0, epsilon = 1e-8);
     }
+
+    #[test]
+    fn second_eigenvector_random_both_sides() {
+        // Deterministic 8x12 binary matrix with varied row/col sums.
+        let rows = 8usize;
+        let cols = 12usize;
+        let mut data = vec![0.0f64; rows * cols];
+        for i in 0..rows {
+            for j in 0..cols {
+                let bit = ((i * 7 + j * 3 + 1) % 5) < 3;
+                if bit {
+                    data[i * cols + j] = 1.0;
+                }
+            }
+        }
+        // Fix up empty rows: set M[i][i % cols] = 1
+        for i in 0..rows {
+            let row_sum: f64 = (0..cols).map(|j| data[i * cols + j]).sum();
+            if row_sum == 0.0 {
+                data[i * cols + (i % cols)] = 1.0;
+            }
+        }
+        // Fix up empty cols: set M[i % rows][j] = 1
+        for j in 0..cols {
+            let col_sum: f64 = (0..rows).map(|i| data[i * cols + j]).sum();
+            if col_sum == 0.0 {
+                data[(j % rows) * cols + j] = 1.0;
+            }
+        }
+
+        let m = Matrix::from_row_major(rows, cols, data);
+
+        // Compute kc (row sums) and kp (col sums)
+        let kc: Vec<f64> = (0..rows).map(|i| m.row(i).iter().sum()).collect();
+        let mut kp = vec![0.0f64; cols];
+        for i in 0..rows {
+            for j in 0..cols {
+                kp[j] += m.get(i, j);
+            }
+        }
+
+        // --- COUNTRY side (n=8) ---
+        let got_c = second_eigenvector(
+            rows,
+            &kc,
+            &kp,
+            |x| m.matvec(x),
+            |x| m.matvec_transpose(x),
+            100_000,
+            1e-13,
+        );
+        assert!(got_c.converged, "country side did not converge");
+
+        // Build explicit S_c = Dc^{-1/2} M Dp^{-1} M^T Dc^{-1/2} (rows x rows)
+        let inv_sqrt_kc: Vec<f64> = kc.iter().map(|&v| 1.0 / v.sqrt()).collect();
+        let inv_kp: Vec<f64> = kp.iter().map(|&v| if v > 0.0 { 1.0 / v } else { 0.0 }).collect();
+        let mut sc = vec![0.0f64; rows * rows];
+        for a in 0..rows {
+            for b in 0..rows {
+                let mut acc = 0.0;
+                for q in 0..cols {
+                    acc += m.get(a, q) * m.get(b, q) * inv_kp[q];
+                }
+                sc[a * rows + b] = inv_sqrt_kc[a] * acc * inv_sqrt_kc[b];
+            }
+        }
+        let (eigvals_c, eigvecs_c) = jacobi_symmetric(&sc, rows);
+        let mut idx_c: Vec<usize> = (0..rows).collect();
+        idx_c.sort_by(|&i, &j| eigvals_c[j].partial_cmp(&eigvals_c[i]).unwrap());
+        let second_c = idx_c[1];
+        let w2_c: Vec<f64> = (0..rows).map(|k| eigvecs_c[k * rows + second_c]).collect();
+        let oracle_raw_c: Vec<f64> =
+            w2_c.iter().zip(&inv_sqrt_kc).map(|(a, b)| a * b).collect();
+
+        let cos_c = aligned_cos(&got_c.raw, &oracle_raw_c);
+        assert_abs_diff_eq!(cos_c, 1.0, epsilon = 1e-7);
+
+        // --- PRODUCT side (n=12) ---
+        // apply_a for product side = M^T x (cols->rows direction reversed)
+        // apply_at for product side = M x
+        let got_p = second_eigenvector(
+            cols,
+            &kp,
+            &kc,
+            |x| m.matvec_transpose(x),
+            |x| m.matvec(x),
+            100_000,
+            1e-13,
+        );
+        assert!(got_p.converged, "product side did not converge");
+
+        // Build explicit S_p = Dp^{-1/2} M^T Dc^{-1} M Dp^{-1/2} (cols x cols)
+        // S_p[a,b] = inv_sqrt_kp[a] * (sum_c M[c,a]*M[c,b]*inv_kc[c]) * inv_sqrt_kp[b]
+        let inv_sqrt_kp: Vec<f64> = kp.iter().map(|&v| 1.0 / v.sqrt()).collect();
+        let inv_kc: Vec<f64> = kc.iter().map(|&v| if v > 0.0 { 1.0 / v } else { 0.0 }).collect();
+        let mut sp = vec![0.0f64; cols * cols];
+        for a in 0..cols {
+            for b in 0..cols {
+                let mut acc = 0.0;
+                for c in 0..rows {
+                    acc += m.get(c, a) * m.get(c, b) * inv_kc[c];
+                }
+                sp[a * cols + b] = inv_sqrt_kp[a] * acc * inv_sqrt_kp[b];
+            }
+        }
+        let (eigvals_p, eigvecs_p) = jacobi_symmetric(&sp, cols);
+        let mut idx_p: Vec<usize> = (0..cols).collect();
+        idx_p.sort_by(|&i, &j| eigvals_p[j].partial_cmp(&eigvals_p[i]).unwrap());
+        let second_p = idx_p[1];
+        let w2_p: Vec<f64> = (0..cols).map(|k| eigvecs_p[k * cols + second_p]).collect();
+        let oracle_raw_p: Vec<f64> =
+            w2_p.iter().zip(&inv_sqrt_kp).map(|(a, b)| a * b).collect();
+
+        let cos_p = aligned_cos(&got_p.raw, &oracle_raw_p);
+        assert_abs_diff_eq!(cos_p, 1.0, epsilon = 1e-7);
+    }
 }
