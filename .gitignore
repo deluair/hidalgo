@@ -1,0 +1,8 @@
+/target
+**/*.rs.bk
+.venv/
+__pycache__/
+*.so
+*.pyd
+dist/
+*.whl
