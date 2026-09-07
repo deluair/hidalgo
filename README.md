@@ -1,6 +1,8 @@
 # hidalgo
 
-Fast economic-complexity kernels (ECI, PCI, product proximity, density) written in Rust, used from Python. It reproduces the Hidalgo-Hausmann eigenvector method that TradeWeave's data builds use, verified against TradeWeave's published rankings, and it does so 126.9x faster than the NumPy path it replaces (measured, details below).
+Fast economic-complexity kernels (ECI, PCI, product proximity, density) written in Rust, used from Python. It reproduces the Hidalgo-Hausmann eigenvector method that TradeWeave's data builds use, checked against TradeWeave's published rankings, and on the benchmark in this repository it ran 82x to 115x faster than the NumPy path it replaces (three runs on one machine, 2026-09-07; the method, the machine, and the caveats are in [Performance](#performance-the-measured-numbers)).
+
+Counts and timings marked (2026-09-07) were re-measured on that date against this working tree and the TradeWeave parquet on the author's laptop. Where an earlier recorded figure did not reproduce, this document reports the new measurement and says so.
 
 If you are an economist and not a programmer: think of this as a very fast research assistant for one specific job. You hand it a country-by-product export table, and it hands back the standard complexity toolkit: revealed comparative advantage (RCA), the binary specialization matrix, the Economic Complexity Index (ECI), the Product Complexity Index (PCI), product proximity, and density. You keep working in Python, exactly as before. The commands you type look the same; only the machinery behind them changed, the way a Stata command would feel identical if its internals were rewritten in a faster language.
 
@@ -16,7 +18,7 @@ The name is for César Hidalgo, co-author of the method it implements (Hidalgo a
 
 This repository is one piece of a larger personal research platform:
 
-- **TradeWeave** (tradeweave.org) is a trade-analytics platform covering 238 countries and 30 years of BACI bilateral trade data. Its data-preparation scripts compute RCA, ECI, PCI, and proximity for every year and store the results as parquet files that the website then serves. Those scripts were the original home of the slow `np.linalg.eig` step; `hidalgo` was built to replace it while reproducing the published rankings exactly.
+- **TradeWeave** (tradeweave.org) is a trade-analytics platform built on BACI bilateral trade data. Its data-preparation scripts compute RCA, ECI, PCI, and proximity for every year and store the results as parquet files that the website then serves. Its `rca_matrix` parquet tree spans 1996 to 2024, 29 years, and the 2024 slice is 226 countries by 6,266 products (2026-09-07, counted with DuckDB over `data/parquet/rca_matrix/`). Those scripts were the original home of the slow `np.linalg.eig` step; `hidalgo` was built to replace it while reproducing the published rankings.
 - **BDPolicyLab** (bdpolicylab.com) is named in the design spec as a later consumer if it computes complexity metrics locally.
 
 An important architectural point from the design spec: all of this runs *locally*, on the researcher's own machine, during data preparation. The public web server only ever serves precomputed files. So `hidalgo` never runs on the server and the server needs no Rust installed. It is a workshop tool, not a deployed service.
@@ -72,7 +74,7 @@ Where `hidalgo` differs from the NumPy reference is purely in *how* it finds tha
 
 The payoff: cost proportional to (iterations x matrix size squared) instead of (matrix size cubed), and in practice the iteration converges in tens of rounds. Because downstream everything is z-scored and ranked, only the eigenvector's direction matters, so the result is the same ranking `np.linalg.eig` produces. That equivalence is not assumed; it is tested (next two sections). A full dense eigensolver (a hand-written Jacobi routine) also exists in the repo, but only inside test code, as an independent oracle to check the fast solver against.
 
-**A provenance caveat, stated plainly.** TradeWeave's published `pci_rankings.parquet` is a hybrid. The HS92 core catalog (the ~5,022 HS6 codes in `products.parquet`) is scored by the eigenvector method, which is what `hidalgo` implements. Roughly 1,400 extended products from later HS revisions (HS96-HS22) are scored by a different formula in TradeWeave's `data/compute_ext_rankings.py` ("PCI = mean ECI of exporters with RCA >= 1") and inserted into the same table. `hidalgo` intentionally does not reproduce that add-on, so parity against the published file is checked on the core universe only.
+**A provenance caveat, stated plainly.** TradeWeave's published `pci_rankings.parquet` is a hybrid. The HS92 core catalog, the 5,115 HS6 codes in `products.parquet` (2026-09-07), is scored by the eigenvector method, which is what `hidalgo` implements. The remaining extended products from later HS revisions (HS96 to HS22) are scored by a different formula in TradeWeave's `data/compute_ext_rankings.py` ("PCI = mean ECI of exporters with RCA >= 1") and inserted into the same table. For 2024 the published table carries 6,266 products, of which 4,762 fall in the core catalog and 1,504 are the extended add-on (2026-09-07, counted with DuckDB). `hidalgo` intentionally does not reproduce that add-on, so parity against the published file is checked on the core universe only.
 
 ## Technology choices, and what was rejected
 
@@ -86,28 +88,49 @@ The payoff: cost proportional to (iterations x matrix size squared) instead of (
 
 ## Performance: the measured numbers
 
-Recorded benchmark, reproducible from this repo (`tests/bench_compare.py`), run on live TradeWeave RCA data: year 2024, 226 countries x 6,429 products, on an Apple Silicon M5 laptop.
+**Method.** `tests/bench_compare.py` loads TradeWeave's latest `rca_matrix` year into a dense NumPy array, then times two paths on that same matrix: a NumPy reference doing two `np.linalg.eig` calls (ECI and PCI) plus proximity, and `hidalgo.bundle_from_rca`. Each path is timed once per run with `time.perf_counter`. There is no warm-up round, no repetition inside a run, and no statistical treatment: the script reports one wall-clock time per path.
 
-| Path | Work done | Wall time |
-|---|---|---|
-| NumPy reference | two `np.linalg.eig` calls (ECI + PCI) plus proximity | 30,732 ms |
-| hidalgo | ECI + PCI + proximity + density | 242 ms |
+**Machine.** MacBook Air, Apple M5, 10 cores, macOS 26.6.2, hidalgo built with `maturin develop --release`, NumPy 2.4.6, Python 3.11.
 
-Recorded speedup: **126.9x** (the ratio was computed from unrounded timings, so it differs in the last digit from dividing the rounded milliseconds above). Note the comparison slightly favors NumPy: hidalgo's 242 ms includes density, which the NumPy path does not compute at all.
+**Input.** Year 2024, 226 countries by 6,266 products.
 
-The gain comes from skipping `np.linalg.eig`, which computes the full spectrum of the roughly 6,000 x 6,000 product reflections matrix just to extract one eigenvector, where hidalgo's matrix-free deflated power iteration needs only matrix-vector products and converges in tens of iterations.
+**Result, three consecutive runs on 2026-09-07:**
 
-To reproduce: `python tests/bench_compare.py` from the project environment, with the TradeWeave parquet tree available (set the environment variable `HIDALGO_TRADEWEAVE_DATA` if it is not at `~/tradeweave/data/parquet`). Numbers above are from the recorded run in this repo's history; your hardware will differ.
+| Run | NumPy reference | hidalgo | Ratio |
+|---|---|---|---|
+| 1 | 30,714.7 ms | 266.7 ms | 115.2x |
+| 2 | 44,337.1 ms | 538.4 ms | 82.4x |
+| 3 | 33,508.0 ms | 299.0 ms | 112.1x |
+
+The honest summary is a range, 82x to 115x, not a single figure. Run 2 is slow on both paths because other work was running on the same laptop; the spread between runs is machine load, not algorithmic variance, and it is the reason this document does not quote one decimal-place number. The comparison also mildly favors NumPy: hidalgo's time includes density, which the NumPy path never computes.
+
+**On the previously published figure.** An earlier version of this README recorded 126.9x from a run on 2026-08-11 (30,732 ms against 242 ms, 226 countries by 6,429 products). That exact ratio did not reproduce on 2026-09-07 and the product count has since changed to 6,266, so it has been replaced by the measurements above rather than carried forward. Treat any single ratio from this benchmark as an order-of-magnitude statement.
+
+The gain comes from skipping `np.linalg.eig`, which computes the full spectrum of the roughly 6,000 x 6,000 product reflections matrix just to extract one eigenvector, where hidalgo's matrix-free deflated power iteration needs only matrix-vector products and converges in tens of iterations. The two-orders-of-magnitude scale of the gap holds across all three runs; the precise multiple does not.
+
+To reproduce: `python tests/bench_compare.py` from the project environment, with the TradeWeave parquet tree available (set the environment variable `HIDALGO_TRADEWEAVE_DATA` if it is not at `~/tradeweave/data/parquet`). Your hardware, your NumPy build, and your machine load will all move the number.
 
 ## Correctness: how we know the math is right
 
 Speed without verified correctness would be worthless for research. The test suite (`pytest tests/`) gates every change with three layers:
 
-1. **Algorithm proof, provenance-independent.** On the same input matrix, hidalgo must agree with NumPy's full `np.linalg.eig`. Recorded result: Spearman rank correlation = 1.0 for ECI and 0.99999999 for PCI. This proves the fast solver finds the same eigenvector as the textbook method, regardless of how anyone's published files were built.
-2. **Deployed parity.** hidalgo must reproduce TradeWeave's published `eci_rankings` / `pci_rankings` ordering on the HS92 core catalog (Spearman > 0.99999), and its proximity must match the published `product_proximity` values to better than 1e-3 (the recorded run agreed to about 5e-5). This proves it can drop into the live pipeline without changing published results. (Core universe only, for the hybrid-PCI reason explained above.)
+1. **Algorithm proof, provenance-independent.** On the same input matrix, hidalgo must agree with NumPy's full `np.linalg.eig`. The assertion threshold is Spearman rank correlation > 0.9999999 for both ECI and PCI. This is the layer that proves the fast solver finds the same eigenvector as the textbook method, regardless of how anyone's published files were built.
+2. **Deployed parity.** hidalgo must reproduce TradeWeave's published `eci_rankings` / `pci_rankings` ordering on the HS92 core catalog (Spearman > 0.99999), and its proximity must match the published `product_proximity` values to better than 1e-3. This is the layer that shows it can drop into the live pipeline without changing published results. (Core universe only, for the hybrid-PCI reason explained above.)
 3. **Rust-side unit tests.** Hand-checked small examples for RCA edge cases, binarization, proximity, and density, plus an independent dense eigensolver (cyclic Jacobi) used as an oracle: on small matrices, the fast solver and the brute-force solver must agree on the second eigenvector's direction.
 
-The parity tests require the TradeWeave parquet data locally and skip themselves cleanly if it is absent. The pure-Python smoke tests need no external data; they were re-run on 2026-08-11 and pass (2 passed).
+**Suite status on 2026-09-07: 4 passed, 1 failed.** Measured values from that run, on year 2024 of the TradeWeave parquet:
+
+| Check | Measured | Threshold | Result |
+|---|---|---|---|
+| Algorithm: ECI vs `np.linalg.eig` | Spearman 0.9999989604 | > 0.9999999 | fails |
+| Algorithm: PCI vs `np.linalg.eig` | not reached | > 0.9999999 | not run |
+| Deployed: ECI vs published, n=226 | Spearman 0.99999896 | > 0.99999 | passes |
+| Deployed: PCI vs published, n=4,762 | Spearman 0.99999999 | > 0.99999 | passes |
+| Deployed: proximity, 3,005,162 pairs | max abs diff 5.00e-05 | < 1e-3 | passes |
+
+**The open issue, stated plainly.** `test_algorithm_matches_numpy_eig` fails. hidalgo's ECI and the NumPy full-eigendecomposition ECI correlate at 0.9999989604, just under the test's own 0.9999999 bar. This is a disagreement in the ordering of a small number of adjacent countries, not a sign flip or a structurally different ranking, and the same comparison against TradeWeave's published ECI clears its looser 0.99999 bar. It is nonetheless a real failure of the repository's hardest correctness gate, and it is open: the cause has not been diagnosed, and it is not known whether the residual comes from the power iteration's convergence tolerance, from near-degenerate eigenvalues in the 2024 country matrix, or from the input data having changed since the threshold was set. An earlier version of this README reported this correlation as 1.0; that figure is superseded. The PCI half of the same test never executes, because the ECI assertion aborts the test first, so hidalgo's PCI has no current provenance-independent check. Until this is resolved, treat the deployed-parity layer, not the algorithm layer, as the evidence that the library is safe to use, and do not read the algorithm proof as passing.
+
+The parity tests require the TradeWeave parquet data locally and skip themselves cleanly if it is absent. The pure-Python smoke tests need no external data and pass (2 passed, 2026-09-07).
 
 ## Installing and using it
 
@@ -141,7 +164,7 @@ out["eci"], out["pci"], out["proximity"], out["density"]
 out["kept_countries"], out["kept_products"]  # indices mapping back to your rows/cols
 ```
 
-`bundle_from_exports(exports, ...)` computes RCA for you first; `bundle_from_m(m, ...)` takes a pre-binarized matrix; `rca(exports)` returns just the RCA matrix. All bundle functions accept `threshold` (default 1.0), `max_iters` (default 100000), and `tol` (default 1e-12) for the eigenvector iteration, and raise a `ValueError` ("complexity undefined for input") when fewer than 3 diversified countries or 3 exported products remain, or when the eigenvector is constant (zero variance).
+`bundle_from_exports(exports, ...)` computes RCA for you first; `bundle_from_m(m, ...)` takes a pre-binarized matrix; `rca(exports)` returns just the RCA matrix. The package exports exactly these four names (`python/hidalgo/__init__.py`). Every bundle function accepts `max_iters` (default 100000) and `tol` (default 1e-12) for the eigenvector iteration; `bundle_from_exports` and `bundle_from_rca` also accept `threshold` (default 1.0), while `bundle_from_m` does not, because its input is already binary. Defaults verified against `crates/hidalgo-py/src/lib.rs` and `python/hidalgo/__init__.pyi` (2026-09-07). All three raise a `ValueError` ("complexity undefined for input") when fewer than 3 diversified countries or 3 exported products remain, or when the eigenvector is constant (zero variance).
 
 To run the test suite and benchmark:
 
@@ -184,11 +207,13 @@ hidalgo/
 
 ## Status and roadmap
 
-Status, from repo evidence as of 2026-08-11:
+Status, from repo evidence as of 2026-09-07:
 
-- Version 0.1.0 (all three manifests). MIT license declared in the workspace manifest; no standalone LICENSE file yet.
-- Fully implemented: all modules in the design spec exist, the compiled extension is built and importable, and the smoke tests pass on this machine today. The recorded parity and benchmark results are documented above.
+- Version 0.1.0 in all three manifests (`crates/hidalgo-core/Cargo.toml`, `crates/hidalgo-py/Cargo.toml`, `pyproject.toml`). MIT is declared in the workspace manifest, but there is still no standalone LICENSE file in the repository, which for a public repo is a gap worth closing.
+- All eight Rust source files named in the design spec exist, the compiled extension is built and importable, and the smoke tests pass.
+- One test is failing: `test_algorithm_matches_numpy_eig`, described under Correctness. It is the repository's only open correctness issue and it is undiagnosed.
 - Distribution is local-only by design: v1 explicitly does not publish to PyPI or crates.io. Consumers install with `maturin develop` or a locally built wheel.
+- The core crate has exactly one runtime dependency, `rayon` 1.10 (`crates/hidalgo-core/Cargo.toml`); `approx` and `rand` are dev-dependencies only. Python requires 3.9 or newer and NumPy 1.24 or newer (`pyproject.toml`).
 
 Declared v1 non-goals (from the design spec): no command-line binary, no internal multi-year loop, no streaming or incremental updates, no GPU, no hand-rolled SIMD, no services/green/EBOPS-specific variants (callers pass whatever country x product matrix they like).
 
@@ -228,3 +253,9 @@ Roadmap, per the implementation plan's final task: wire `hidalgo` into TradeWeav
 - **Virtual environment**: a private, project-local Python installation, so a project's packages never interfere with the system or with other projects.
 - **Wheel**: Python's binary package format; `maturin build --release` produces one so the compiled library can be installed elsewhere without recompiling.
 - **z-score**: standardizing a variable by subtracting its mean and dividing by its standard deviation; both ECI and PCI are reported as z-scores.
+
+## Author and license
+
+Written and maintained by Md Deluair Hossen, PhD, an international trade economist, as the computational kernel behind the TradeWeave trade-analytics platform.
+
+MIT, declared in the workspace `Cargo.toml`. There is no standalone LICENSE file in the repository yet.
