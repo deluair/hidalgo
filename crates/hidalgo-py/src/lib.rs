@@ -47,6 +47,8 @@ fn bundle_to_dict<'py>(py: Python<'py>, b: &Bundle) -> PyResult<Bound<'py, PyDic
     out.set_item("density", mat_to_py(py, &b.density))?;
     out.set_item("eci_converged", cx.eci_converged)?;
     out.set_item("pci_converged", cx.pci_converged)?;
+    out.set_item("eci_residual", cx.eci_residual)?;
+    out.set_item("pci_residual", cx.pci_residual)?;
     Ok(out)
 }
 
