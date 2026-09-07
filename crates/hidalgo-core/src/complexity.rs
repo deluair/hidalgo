@@ -12,6 +12,10 @@ pub struct ComplexityResult {
     pub kept_products: Vec<usize>,
     pub eci_converged: bool,
     pub pci_converged: bool,
+    /// `||S v - mu v||` at the returned country-side eigenvector (see `eig`).
+    pub eci_residual: f64,
+    /// `||S v - mu v||` at the returned product-side eigenvector (see `eig`).
+    pub pci_residual: f64,
 }
 
 /// Population standardization (ddof=0), matching NumPy `.std()`.
@@ -126,6 +130,8 @@ pub fn eci_pci(m: &Matrix, max_iters: usize, tol: f64) -> Option<ComplexityResul
         kept_products,
         eci_converged: eci_eig.converged,
         pci_converged: pci_eig.converged,
+        eci_residual: eci_eig.residual,
+        pci_residual: pci_eig.residual,
     })
 }
 

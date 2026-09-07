@@ -1,29 +1,77 @@
-//! Second eigenvector of a reflections matrix, found matrix-free by shifted,
-//! deflated power iteration on the symmetric similar operator.
-
+//! Second eigenvector of a reflections matrix, found matrix-free by deflated
+//! power iteration on the symmetric similar operator.
+//!
+//! # Operator
+//!
+//! The reflections operator `Mtilde = D^-1 A D_other^-1 A^T` is similar to
+//! `S = D^-1/2 A D_other^-1 A^T D^-1/2`, and `S = X X^T` with
+//! `X = D^-1/2 A D_other^-1/2`, so `S` is symmetric positive semi-definite: its
+//! spectrum lies in `[0, 1]`, with the trivial top pair `(1, sqrt(d))`. We
+//! iterate on `S` and undo the similarity at the end (`raw = v / sqrt(d)`).
+//!
+//! Because no eigenvalue of `S` is negative, plain power iteration deflated
+//! against `sqrt(d)` already converges to the second eigenvector, at rate
+//! `lambda3 / lambda2`. There is nothing for a spectral shift to fix, and a
+//! shift only hurts: iterating on `S + I` changes the rate to
+//! `(1 + lambda3) / (1 + lambda2)`, which is strictly closer to 1.
+//!
+//! # Stopping rule
+//!
+//! Convergence is declared on the eigenvalue residual `||S v - mu v||` with
+//! `mu` the Rayleigh quotient, not on the step between successive iterates.
+//! The step is the wrong quantity to test. If the angular error decays
+//! geometrically at rate `r`, the step is only `(1 - r)` times the error still
+//! outstanding, so a squared-cosine step test `1 - <v_k, v_k-1> < tol` actually
+//! halts at an eigenvector error of roughly `tol / (1 - r)^2`.
+//!
+//! That amplification is not academic. On the 2024 TradeWeave country matrix
+//! (226 countries x 4762 HS92 products) the country-side spectrum is
+//! `lambda2 = 0.2760`, `lambda3 = 0.2135`: well separated, `lambda3 / lambda2 =
+//! 0.7735`. Under the old `S + I` shift the rate was 0.9510, giving an
+//! amplification of `1 / (1 - r)^2 ~ 4.2e2`; at the default `tol = 1e-12` the
+//! returned ECI was `5.6e-10` off true in `1 - cos`, enough to transpose one
+//! adjacent pair of country ranks against NumPy's full eigendecomposition.
+//!
+//! The residual test has no such amplification. By Davis-Kahan the angle to the
+//! true eigenvector is bounded by `||S v - mu v|| / gap`, `gap` being the
+//! distance from `mu` to the rest of the spectrum. On that same matrix, with
+//! `gap = 6.3e-2` and `tol = 1e-12`, the bound is an angle of `1.6e-11`, i.e. a
+//! `1 - cos` below f64 resolution; measured, hidalgo now matches NumPy's ECI
+//! ranking exactly. Accuracy is therefore governed by the spectral gap, and a
+//! caller facing a genuinely near-degenerate `lambda2 ~ lambda3` should read
+//! `SecondEig::eigenvalue` and `SecondEig::residual` rather than assume the
+//! ranking is resolved.
 
 /// Raw second eigenvector of the reflections matrix (before standardization).
 pub struct SecondEig {
     pub raw: Vec<f64>,
     pub iters: usize,
     pub converged: bool,
+    /// Rayleigh quotient at the returned vector: the estimate of `lambda2` of `S`.
+    pub eigenvalue: f64,
+    /// `||S v - mu v||` at the returned vector, deflated against the trivial top
+    /// eigenvector. This is the quantity compared against `tol`.
+    pub residual: f64,
 }
 
 fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
-fn normalize(v: &mut [f64]) {
+/// Scale `v` to unit length; returns the norm it had (0.0 if `v` was zero).
+fn normalize(v: &mut [f64]) -> f64 {
     let n = dot(v, v).sqrt();
     if n > 0.0 {
         for x in v.iter_mut() {
             *x /= n;
         }
     }
+    n
 }
 
 /// Second eigenvector of Mtilde = D^{-1} A D_other^{-1} A^T, solved matrix-free
-/// on the symmetric similar S via shifted (S+I), deflated power iteration.
+/// on the symmetric similar S via deflated power iteration, stopped on the
+/// eigenvalue residual `||S v - mu v|| < tol`. See the module docs.
 ///
 /// `d` is the primary-axis degree vector (len `n`), `d_other` the other axis.
 /// `apply_a(x_other) -> A x` (len `n`); `apply_at(x_n) -> A^T x` (len other).
@@ -65,36 +113,41 @@ where
     }
     normalize(&mut v);
 
-    let mut prev = v.clone();
+    let mut sv = apply_s(&v);
     let mut converged = false;
     let mut iters = 0;
-    while iters < max_iters {
-        iters += 1;
-        let sv = apply_s(&v);
+    let mut mu;
+    let mut residual;
+    loop {
+        // Deflate S v against w1. Exact in theory (S w1 = w1, v _|_ w1), but
+        // roundoff leaks the trivial direction back in every application.
+        let c = dot(&w1, &sv);
         for i in 0..n {
-            v[i] += sv[i]; // (S + I) shift
+            sv[i] -= c * w1[i];
         }
-        let c1 = dot(&w1, &v);
-        for i in 0..n {
-            v[i] -= c1 * w1[i]; // deflate
-        }
-        normalize(&mut v);
-        let mut s = dot(&v, &prev);
-        if s < 0.0 {
-            for x in v.iter_mut() {
-                *x = -*x;
-            }
-            s = -s;
-        }
-        if 1.0 - s < tol {
+        mu = dot(&v, &sv); // Rayleigh quotient, v is unit-length
+        residual = (0..n).map(|i| (sv[i] - mu * v[i]).powi(2)).sum::<f64>().sqrt();
+        if residual < tol {
             converged = true;
             break;
         }
-        prev.copy_from_slice(&v);
+        if iters >= max_iters {
+            break;
+        }
+        if dot(&sv, &sv) == 0.0 {
+            // lambda2 == 0: the deflated subspace is entirely null, so no
+            // second eigendirection is defined. Leave v at the last unit
+            // iterate and report non-convergence.
+            break;
+        }
+        iters += 1;
+        v.copy_from_slice(&sv);
+        normalize(&mut v);
+        sv = apply_s(&v);
     }
 
     let raw: Vec<f64> = v.iter().zip(&inv_sqrt_d).map(|(a, b)| a * b).collect();
-    SecondEig { raw, iters, converged }
+    SecondEig { raw, iters, converged, eigenvalue: mu, residual }
 }
 
 #[cfg(test)]
@@ -143,6 +196,7 @@ mod tests {
             1e-13,
         );
         assert!(got.converged, "power iteration did not converge");
+        assert!(got.residual < 1e-13, "residual {} not below tol", got.residual);
 
         // oracle: build symmetric S = Dc^-1/2 M Dp^-1 M^T Dc^-1/2 explicitly
         let inv_sqrt_kc: Vec<f64> = kc.iter().map(|&v| 1.0 / v.sqrt()).collect();
@@ -164,7 +218,10 @@ mod tests {
         let w2: Vec<f64> = (0..c).map(|k| eigvecs[k * c + second]).collect();
         let oracle_raw: Vec<f64> = w2.iter().zip(&inv_sqrt_kc).map(|(a, b)| a * b).collect();
 
-        assert_abs_diff_eq!(aligned_cos(&got.raw, &oracle_raw), 1.0, epsilon = 1e-8);
+        // Residual-based stopping: with tol = 1e-13 and a well-separated
+        // spectrum the eigenvector should agree with the dense oracle to
+        // near machine precision, not merely to 1e-8.
+        assert_abs_diff_eq!(aligned_cos(&got.raw, &oracle_raw), 1.0, epsilon = 1e-14);
     }
 
     #[test]
@@ -218,6 +275,7 @@ mod tests {
             1e-13,
         );
         assert!(got_c.converged, "country side did not converge");
+        assert!(got_c.residual < 1e-13, "country residual {}", got_c.residual);
 
         // Build explicit S_c = Dc^{-1/2} M Dp^{-1} M^T Dc^{-1/2} (rows x rows)
         let inv_sqrt_kc: Vec<f64> = kc.iter().map(|&v| 1.0 / v.sqrt()).collect();
@@ -241,7 +299,7 @@ mod tests {
             w2_c.iter().zip(&inv_sqrt_kc).map(|(a, b)| a * b).collect();
 
         let cos_c = aligned_cos(&got_c.raw, &oracle_raw_c);
-        assert_abs_diff_eq!(cos_c, 1.0, epsilon = 1e-7);
+        assert_abs_diff_eq!(cos_c, 1.0, epsilon = 1e-14);
 
         // --- PRODUCT side (n=12) ---
         // apply_a for product side = M^T x (cols->rows direction reversed)
@@ -256,6 +314,7 @@ mod tests {
             1e-13,
         );
         assert!(got_p.converged, "product side did not converge");
+        assert!(got_p.residual < 1e-13, "product residual {}", got_p.residual);
 
         // Build explicit S_p = Dp^{-1/2} M^T Dc^{-1} M Dp^{-1/2} (cols x cols)
         // S_p[a,b] = inv_sqrt_kp[a] * (sum_c M[c,a]*M[c,b]*inv_kc[c]) * inv_sqrt_kp[b]
@@ -280,6 +339,6 @@ mod tests {
             w2_p.iter().zip(&inv_sqrt_kp).map(|(a, b)| a * b).collect();
 
         let cos_p = aligned_cos(&got_p.raw, &oracle_raw_p);
-        assert_abs_diff_eq!(cos_p, 1.0, epsilon = 1e-7);
+        assert_abs_diff_eq!(cos_p, 1.0, epsilon = 1e-14);
     }
 }

@@ -8,6 +8,14 @@ Two layers of verification:
    ranking. This proves the Rust math is correct regardless of how the published
    parquet was built. Expect Spearman ~ 1.0.
 
+   ECI and PCI are measured and reported independently, then asserted together
+   at the end. Before 2026-09-07 the ECI assertion ran first and aborted the
+   test, so PCI never reached its own check and had no provenance-independent
+   proof at all. Measured on TradeWeave 2024 (226 countries x 4762 HS92
+   products) both sides now reproduce `np.linalg.eig` to an exact ranking
+   (Spearman 1.000000000000). See `crates/hidalgo-core/src/eig.rs` for why the
+   solver's stopping rule is an eigenvalue residual and not a step size.
+
 2. DEPLOYED PARITY: hidalgo must reproduce the published `eci_rankings` /
    `pci_rankings` ordering. IMPORTANT provenance note: `pci_rankings.parquet` is
    a HYBRID. The HS92 core catalog (the ~5,022 HS6 codes in `products.parquet`)
@@ -81,14 +89,21 @@ def _build(data_dir, year, core):
     return mat, countries, products, eci_ref, pci_ref
 
 
+ALGO_TOL = 0.9999999   # Spearman floor for both sides against np.linalg.eig
+RESIDUAL_TOL = 1e-12   # hidalgo's own default `tol`, i.e. ||S v - mu v||
+
+
 def test_algorithm_matches_numpy_eig(data_dir):
     """Provenance-independent: hidalgo must agree with NumPy's full eig on the
-    SAME matrix. This is the definitive correctness proof for the Rust solver."""
+    SAME matrix. This is the definitive correctness proof for the Rust solver.
+
+    Both sides are measured and printed before anything is asserted, so a
+    regression on one never suppresses the evidence for the other.
+    """
     year = _latest_common_year(data_dir)
     core = _core_products(data_dir)
     mat, countries, products, _, _ = _build(data_dir, year, core)
     out = hidalgo.bundle_from_rca(mat, threshold=1.0)
-    assert out["eci_converged"] and out["pci_converged"]
 
     B = (mat >= 1.0).astype(float)
     kc, kp = B.sum(1), B.sum(0)
@@ -96,6 +111,7 @@ def test_algorithm_matches_numpy_eig(data_dir):
     Bk = B[keepc][:, keepp]
     kck, kpp = kc[keepc], kp[keepp]
 
+    # --- ECI (country side) ---
     mt_c = (Bk / kck[:, None]) @ (Bk / kpp[None, :]).T
     w, v = np.linalg.eig(mt_c)
     np_eci = v[:, np.argsort(w.real)[::-1][1]].real
@@ -104,9 +120,11 @@ def test_algorithm_matches_numpy_eig(data_dir):
     eci = dict(zip([countries[i] for i in out["kept_countries"]], out["eci"]))
     hid_eci = np.array([eci[countries[i]] for i in np.where(keepc)[0]])
     rho_e, _ = spearmanr(hid_eci, np_eci)
-    print(f"[algorithm] year={year} ECI hidalgo-vs-numpy spearman={rho_e:.10f}")
-    assert rho_e > 0.9999999, f"ECI vs numpy eig: {rho_e}"
+    print(f"[algorithm] year={year} n={len(hid_eci)} ECI hidalgo-vs-numpy "
+          f"spearman={rho_e:.12f} residual={out['eci_residual']:.2e} "
+          f"converged={out['eci_converged']}")
 
+    # --- PCI (product side), measured independently of the ECI outcome ---
     mt_p = (Bk / kpp[None, :]).T @ (Bk / kck[:, None])
     w2, v2 = np.linalg.eig(mt_p)
     np_pci = v2[:, np.argsort(w2.real)[::-1][1]].real
@@ -115,8 +133,24 @@ def test_algorithm_matches_numpy_eig(data_dir):
     pci = dict(zip([products[j] for j in out["kept_products"]], out["pci"]))
     hid_pci = np.array([pci[products[j]] for j in np.where(keepp)[0]])
     rho_p, _ = spearmanr(hid_pci, np_pci)
-    print(f"[algorithm] year={year} PCI hidalgo-vs-numpy spearman={rho_p:.10f}")
-    assert rho_p > 0.9999999, f"PCI vs numpy eig: {rho_p}"
+    print(f"[algorithm] year={year} n={len(hid_pci)} PCI hidalgo-vs-numpy "
+          f"spearman={rho_p:.12f} residual={out['pci_residual']:.2e} "
+          f"converged={out['pci_converged']}")
+
+    failures = []
+    if not out["eci_converged"]:
+        failures.append(f"ECI did not converge (residual {out['eci_residual']:.3e})")
+    if not out["pci_converged"]:
+        failures.append(f"PCI did not converge (residual {out['pci_residual']:.3e})")
+    if out["eci_residual"] >= RESIDUAL_TOL:
+        failures.append(f"ECI residual {out['eci_residual']:.3e} >= {RESIDUAL_TOL:.0e}")
+    if out["pci_residual"] >= RESIDUAL_TOL:
+        failures.append(f"PCI residual {out['pci_residual']:.3e} >= {RESIDUAL_TOL:.0e}")
+    if not rho_e > ALGO_TOL:
+        failures.append(f"ECI vs numpy eig: {rho_e}")
+    if not rho_p > ALGO_TOL:
+        failures.append(f"PCI vs numpy eig: {rho_p}")
+    assert not failures, "; ".join(failures)
 
 
 def test_deployed_parity_core_universe(data_dir):
