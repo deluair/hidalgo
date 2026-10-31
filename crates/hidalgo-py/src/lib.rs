@@ -25,23 +25,23 @@ fn to_matrix(arr: &PyReadonlyArray2<f64>) -> Matrix {
 fn mat_to_py<'py>(py: Python<'py>, m: &Matrix) -> Bound<'py, PyArray2<f64>> {
     Array2::from_shape_vec((m.rows, m.cols), m.data.clone())
         .unwrap()
-        .into_pyarray_bound(py)
+        .into_pyarray(py)
 }
 
 fn bundle_to_dict<'py>(py: Python<'py>, b: &Bundle) -> PyResult<Bound<'py, PyDict>> {
     let cx = &b.complexity;
-    let out = PyDict::new_bound(py);
-    out.set_item("eci", cx.eci.clone().into_pyarray_bound(py))?;
-    out.set_item("pci", cx.pci.clone().into_pyarray_bound(py))?;
-    out.set_item("diversity", cx.diversity.clone().into_pyarray_bound(py))?;
-    out.set_item("ubiquity", cx.ubiquity.clone().into_pyarray_bound(py))?;
+    let out = PyDict::new(py);
+    out.set_item("eci", cx.eci.clone().into_pyarray(py))?;
+    out.set_item("pci", cx.pci.clone().into_pyarray(py))?;
+    out.set_item("diversity", cx.diversity.clone().into_pyarray(py))?;
+    out.set_item("ubiquity", cx.ubiquity.clone().into_pyarray(py))?;
     out.set_item(
         "kept_countries",
-        cx.kept_countries.iter().map(|&x| x as i64).collect::<Vec<_>>().into_pyarray_bound(py),
+        cx.kept_countries.iter().map(|&x| x as i64).collect::<Vec<_>>().into_pyarray(py),
     )?;
     out.set_item(
         "kept_products",
-        cx.kept_products.iter().map(|&x| x as i64).collect::<Vec<_>>().into_pyarray_bound(py),
+        cx.kept_products.iter().map(|&x| x as i64).collect::<Vec<_>>().into_pyarray(py),
     )?;
     out.set_item("proximity", mat_to_py(py, &b.proximity))?;
     out.set_item("density", mat_to_py(py, &b.density))?;
